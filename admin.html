@@ -1,0 +1,74 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#0f172a" />
+    <title>Administración | Mochila</title>
+    <link rel="stylesheet" href="admin.css" />
+  </head>
+  <body>
+    <div class="admin-shell">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">M</span><span>Mochila <small>Admin</small></span></div>
+        <nav id="admin-nav" aria-label="Navegación de administración">
+          <button class="nav-item active" data-section="summary">Resumen</button>
+          <button class="nav-item" data-section="codes">Códigos</button>
+          <button class="nav-item" data-section="students">Alumnos</button>
+          <button class="nav-item" data-section="groups">Salones</button>
+          <button class="nav-item" data-section="subjects">Materias</button>
+          <button class="nav-item" data-section="schedule">Horarios</button>
+        </nav>
+        <button class="logout" id="logout-button" type="button">Cerrar sesión</button>
+      </aside>
+
+      <main class="content">
+        <header class="page-header">
+          <div><p class="eyebrow">Panel de control</p><h1 id="page-title">Resumen</h1></div>
+          <p class="session-label" id="session-user"></p>
+        </header>
+        <p class="feedback" id="feedback" role="status" aria-live="polite"></p>
+
+        <section class="view active" data-view="summary">
+          <div class="stat-grid">
+            <article class="stat"><span>Alumnos</span><strong id="stat-students">—</strong></article>
+            <article class="stat"><span>Salones</span><strong id="stat-groups">—</strong></article>
+            <article class="stat"><span>Materias</span><strong id="stat-subjects">—</strong></article>
+            <article class="stat accent"><span>Códigos disponibles</span><strong id="stat-codes">—</strong></article>
+          </div>
+          <div class="panel welcome"><p class="eyebrow">Mochila</p><h2>Todo lo importante, en un solo lugar.</h2><p>Administra accesos, personas y horarios sin salir de la sesión segura del servidor.</p></div>
+        </section>
+
+        <section class="view" data-view="codes">
+          <div class="section-heading"><div><p class="eyebrow">Accesos</p><h2>Códigos de activación</h2></div></div>
+          <div class="panel form-panel"><label>Salón/grupo<select id="code-group"></select></label><button id="generate-code" type="button">Generar código</button><output class="one-time-code" id="generated-code"></output><p class="hint">El código aparece una sola vez. Guárdalo antes de cambiar de sección.</p></div>
+          <div class="panel table-wrap"><table><thead><tr><th>Salón</th><th>Estado</th><th>Creado</th><th></th></tr></thead><tbody id="codes-table"></tbody></table></div>
+        </section>
+
+        <section class="view" data-view="students">
+          <div class="section-heading"><div><p class="eyebrow">Personas</p><h2>Alumnos</h2></div></div>
+          <div class="panel table-wrap"><table><thead><tr><th>Usuario</th><th>Salón</th><th>Estado</th><th>Creado</th><th></th></tr></thead><tbody id="students-table"></tbody></table></div>
+        </section>
+
+        <section class="view" data-view="groups">
+          <div class="section-heading"><div><p class="eyebrow">Organización</p><h2>Salones</h2></div></div>
+          <div class="panel table-wrap"><table><thead><tr><th>Salón</th><th>Horario</th></tr></thead><tbody id="groups-table"></tbody></table></div>
+          <div class="panel" id="group-schedule-panel" hidden><div class="inline-heading"><h3 id="group-schedule-title">Horario</h3><select id="group-schedule-day"></select></div><ul class="schedule-list" id="group-schedule-list"></ul></div>
+        </section>
+
+        <section class="view" data-view="subjects">
+          <div class="section-heading"><div><p class="eyebrow">Contenido</p><h2>Materias</h2></div></div>
+          <form class="panel form-panel subject-form" id="subject-form"><label>Nueva materia<input id="new-subject" maxlength="120" required /></label><button type="submit">Agregar materia</button></form>
+          <div class="panel table-wrap"><table><thead><tr><th>Materia</th><th>Creada</th><th></th></tr></thead><tbody id="subjects-table"></tbody></table></div>
+        </section>
+
+        <section class="view" data-view="schedule">
+          <div class="section-heading"><div><p class="eyebrow">Planificación</p><h2>Horarios</h2></div></div>
+          <div class="panel form-panel schedule-controls"><label>Grupo<select id="schedule-group"></select></label><label>Día<select id="schedule-day"></select></label><label>Materia<select id="schedule-subject"></select></label><button id="add-schedule" type="button">Agregar</button></div>
+          <div class="panel table-wrap"><table><thead><tr><th>Materia</th><th>Día</th><th></th></tr></thead><tbody id="schedule-table"></tbody></table></div>
+        </section>
+      </main>
+    </div>
+    <script src="admin.js"></script>
+  </body>
+</html>
