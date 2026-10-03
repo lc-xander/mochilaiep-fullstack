@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Prueba aislada de RLS</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 980px; margin: 2rem auto; padding: 0 1rem; }
+      label { display: block; margin-top: .8rem; }
+      input, button { box-sizing: border-box; font: inherit; padding: .55rem; margin-top: .25rem; }
+      input { width: min(100%, 32rem); }
+      button { cursor: pointer; margin-right: .5rem; }
+      pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 1rem; background: color-mix(in srgb, CanvasText 8%, Canvas); border-radius: .4rem; }
+      .ok { color: #16803c; } .error { color: #b42318; }
+    </style>
+  </head>
+  <body>
+    <h1>Prueba aislada de RLS para <code>public.schedule</code></h1>
+    <p>Este archivo no pertenece al frontend de La Mochila. Introduce aquí las credenciales de un estudiante de prueba; no se guardan ni se envían a ningún servicio distinto de Supabase.</p>
+
+    <form id="config-form">
+      <label>Project URL
+        <input id="project-url" type="url" placeholder="https://TU-PROYECTO.supabase.co" required>
+      </label>
+      <label>Publishable key / anon key
+        <input id="publishable-key" type="password" placeholder="sb_publishable_... o anon key" required autocomplete="off">
+      </label>
+      <label>Email del usuario de prueba
+        <input id="email" type="email" required autocomplete="username">
+      </label>
+      <label>Contraseña del usuario de prueba
+        <input id="password" type="password" required autocomplete="current-password">
+      </label>
+      <button type="submit">Iniciar sesión y consultar</button>
+      <button id="sign-out" type="button" disabled>Cerrar sesión</button>
+    </form>
+
+    <h2>Resultado</h2>
+    <p id="status">Configura los valores y ejecuta la prueba.</p>
+    <pre id="output" aria-live="polite"></pre>
+
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2" defer></script>
+    <script>
+      'use strict';
+
+      // No pongas valores reales en este archivo ni lo subas con credenciales incluidas.
+      const output = document.querySelector('#output');
+      const status = document.querySelector('#status');
+      const signOutButton = document.querySelector('#sign-out');
+      let client;
+
+      function showStatus(message, kind = '') {
+        status.textContent = message;
+        status.className = kind;
+      }
+
+      function showData(value) {
+        output.textContent = JSON.stringify(value, null, 2);
+      }
+
+      function assertRlsRows(rows, profile, groups) {
+        const ownGroupId = profile?.group_id;
+        const ownGroupName = groups.find((group) => group.id === ownGroupId)?.group_name;
+        const unexpectedRows = rows.filter((row) => row.group_id !== ownGroupId);
+        const result = {
+          authenticatedUser: profile?.username ?? null,
+          role: profile?.role ?? null,
+          active: profile?.active ?? null,
+          expectedGroup: ownGroupName ?? ownGroupId ?? null,
+          returnedRowCount: rows.length,
+          returnedGroupIds: [...new Set(rows.map((row) => row.group_id))],
+          rlsCheck: unexpectedRows.length === 0 ? 'PASS' : 'FAIL',
+          explanation: unexpectedRows.length === 0
+            ? 'Todas las filas devueltas pertenecen al group_id del estudiante.'
+            : 'La consulta devolvió filas de otro group_id; revisa la política RLS antes de continuar.'
+        };
+        return { result, rows, unexpectedRows };
+      }
+
+      document.querySelector('#config-form').addEventListener('submit', async (event) => {
+        event.preventDefault();
+        output.textContent = '';
+        signOutButton.disabled = true;
+
+        try {
+          const projectUrl = document.querySelector('#project-url').value.trim();
+          const publishableKey = document.querySelector('#publishable-key').value.trim();
+          const email = document.querySelector('#email').value.trim();
+          const password = document.querySelector('#password').value;
+
+          if (!window.supabase?.createClient) {
+            throw new Error('El cliente de Supabase no se cargó desde el CDN. Comprueba la conexión.');
+          }
+
+          client = window.supabase.createClient(projectUrl, publishableKey);
+          showStatus('Iniciando sesión…');
+          const { data: authData, error: authError } = await client.auth.signInWithPassword({ email, password });
+          if (authError) throw authError;
+
+          const { data: profile, error: profileError } = await client
+            .from('profiles')
+            .select('id, username, role, group_id, active')
+            .eq('id', authData.user.id)
+            .single();
+          if (profileError) throw profileError;
+
+          if (profile.role !== 'student' || profile.active !== true || profile.group_id === null) {
+            throw new Error('El usuario autenticado no es un estudiante activo con grupo asignado.');
+          }
+
+          const { data: groups, error: groupsError } = await client
+            .from('school_groups')
+            .select('id, group_name');
+          if (groupsError) throw groupsError;
+
+          showStatus('Consultando public.schedule con la sesión autenticada…');
+          const { data: rows, error: scheduleError } = await client
+            .from('schedule')
+            .select('id, group_id, day, subject_id')
+            .order('day')
+            .order('id');
+          if (scheduleError) throw scheduleError;
+
+          const verification = assertRlsRows(rows ?? [], profile, groups ?? []);
+          showData({ profile, verification: verification.result, schedule: verification.rows });
+          showStatus(
+            verification.unexpectedRows.length === 0
+              ? 'RLS PASS: solo se devolvieron filas del grupo del estudiante.'
+              : 'RLS FAIL: se devolvieron filas de otro grupo.',
+            verification.unexpectedRows.length === 0 ? 'ok' : 'error'
+          );
+          signOutButton.disabled = false;
+        } catch (error) {
+          showStatus(`Error: ${error.message}`, 'error');
+          showData({ error: error.message, details: error });
+          if (client) await client.auth.signOut().catch(() => {});
+        }
+      });
+
+      signOutButton.addEventListener('click', async () => {
+        if (!client) return;
+        const { error } = await client.auth.signOut();
+        showStatus(error ? `Error al cerrar sesión: ${error.message}` : 'Sesión cerrada.');
+        signOutButton.disabled = true;
+      });
+    </script>
+  </body>
+</html>
