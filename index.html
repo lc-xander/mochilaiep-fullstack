@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#101723" />
+    <title>Prepara tu mochila</title>
+    <style>
+      :root { color-scheme: dark; --bg:#101723; --panel:#182231; --muted:#9aa9bd; --line:#2c3a4e; --accent:#78b7ff; --add:#6ee7b7; --remove:#fda4af; --danger:#fda4af; }
+      * { box-sizing:border-box; }
+      body { margin:0; min-height:100vh; background:radial-gradient(circle at top right,#203b62,transparent 35%),var(--bg); color:#f7fbff; font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif; }
+      main { width:min(900px,calc(100% - 24px)); margin:0 auto; padding:28px 0 max(32px,env(safe-area-inset-bottom)); }
+      h1 { margin:0; font-size:clamp(2rem,9vw,3.25rem); line-height:1; letter-spacing:-.06em; }
+      h2 { font-size:1.4rem; margin:0; }
+      .intro { color:var(--muted); margin:12px 0 22px; font-size:1rem; line-height:1.45; }
+      .card { border:1px solid var(--line); background:rgba(24,34,49,.92); border-radius:18px; padding:20px; box-shadow:0 16px 42px rgba(0,0,0,.22); }
+      .login-card { max-width:480px; margin:10vh auto 0; }
+      .login-card h1 { font-size:clamp(2rem,10vw,3.3rem); }
+      .login-card p { color:var(--muted); line-height:1.45; }
+      form { display:grid; gap:12px; margin-top:22px; }
+      label { display:grid; gap:7px; color:var(--muted); font-size:.9rem; }
+      input,select,button { min-height:48px; padding:12px; border-radius:10px; font:inherit; }
+      input,select { width:100%; background:#111b28; border:1px solid var(--line); color:#f7fbff; }
+      button { border:0; background:var(--accent); color:#07111d; font-weight:750; cursor:pointer; }
+      button.secondary { width:auto; min-height:38px; padding:8px 11px; background:transparent; color:var(--muted); border:1px solid var(--line); }
+      .hint,.error { margin:0; font-size:.9rem; line-height:1.4; }
+      .hint { color:var(--muted); } .error { min-height:1.3em; color:var(--danger); }
+      .topbar { display:flex; align-items:center; justify-content:space-between; gap:12px; margin-bottom:24px; }
+      .room { color:var(--accent); font-weight:750; font-size:.95rem; }
+      .comparison { display:flex; align-items:center; justify-content:space-between; gap:12px; }
+      .day-label { color:var(--muted); font-size:.82rem; text-transform:uppercase; letter-spacing:.09em; margin:0 0 6px; }
+      .arrow { font-size:1.55rem; color:var(--accent); }
+      .delta { display:grid; grid-template-columns:1fr; gap:12px; margin-top:24px; }
+      .change { border-radius:14px; padding:17px; }
+      .change h3 { margin:0 0 10px; font-size:1rem; }
+      .added { background:rgba(16,185,129,.12); border:1px solid rgba(110,231,183,.28); } .added h3 { color:var(--add); }
+      .removed { background:rgba(244,63,94,.11); border:1px solid rgba(253,164,175,.25); } .removed h3 { color:var(--remove); }
+      .subject-list { list-style:none; display:flex; flex-wrap:wrap; gap:8px; padding:0; margin:0; }
+      .subject-list li { padding:8px 11px; border-radius:9px; background:#26354a; font-size:.94rem; }
+      .subject-list .empty { color:var(--muted); background:transparent; padding:0; }
+      details { margin-top:20px; padding-top:18px; border-top:1px solid var(--line); }
+      summary { cursor:pointer; color:var(--accent); font-weight:700; padding:6px 0; }
+      .controls { display:grid; gap:14px; margin-top:16px; }
+      .controls button { width:100%; }
+      [hidden] { display:none !important; }
+      @media (min-width:641px) { main { width:min(900px,calc(100% - 32px)); padding:64px 0; } .card { padding:26px; border-radius:20px; } .comparison { display:grid; grid-template-columns:1fr auto 1fr; gap:20px; align-items:start; } .arrow { font-size:2rem; margin-top:22px; } .delta { grid-template-columns:1fr 1fr; gap:14px; margin-top:28px; } .controls { display:flex; align-items:end; } .controls label { flex:1; } .controls button { width:auto; } }
+    </style>
+  </head>
+  <body>
+    <main>
+      <section class="card login-card" id="auth-view">
+        <h1>Prepara tu mochila</h1>
+        <p>Primero valida un código de activación para crear la cuenta. Después inicia sesión con tu usuario y contraseña.</p>
+
+        <form id="activate-form">
+          <label for="activation-code">Código de activación
+            <input id="activation-code" name="activation-code" inputmode="text" autocomplete="off" autocapitalize="characters" placeholder="ABC-123" maxlength="12" />
+          </label>
+          <label for="new-username">Usuario
+            <input id="new-username" name="new-username" autocomplete="username" placeholder="usuario" maxlength="40" />
+          </label>
+          <label for="new-password">Contraseña
+            <input id="new-password" name="new-password" type="password" autocomplete="new-password" placeholder="Mínimo 8 caracteres" maxlength="100" />
+          </label>
+          <button type="submit">Crear cuenta</button>
+          <p class="error" id="activate-error" aria-live="polite"></p>
+          <p class="hint">Los códigos son de un solo uso y se revisan en el servidor.</p>
+        </form>
+
+        <form id="login-form" hidden>
+          <label for="login-username">Usuario
+            <input id="login-username" name="login-username" autocomplete="username" placeholder="usuario" maxlength="40" />
+          </label>
+          <label for="login-password">Contraseña
+            <input id="login-password" name="login-password" type="password" autocomplete="current-password" placeholder="Contraseña" maxlength="100" />
+          </label>
+          <button type="submit">Iniciar sesión</button>
+          <p class="error" id="login-error" aria-live="polite"></p>
+          <p class="hint"><button class="secondary" id="switch-to-activate" type="button">Crear cuenta con código</button></p>
+        </form>
+
+        <p class="hint"><button class="secondary" id="switch-to-login" type="button">Ya tengo usuario</button></p>
+      </section>
+
+      <section id="app-view" hidden>
+        <header class="topbar">
+          <div><h1>Prepara tu mochila</h1><p class="room" id="room-name"></p></div>
+          <button class="secondary" id="logout-button" type="button">Cerrar sesión</button>
+        </header>
+        <p class="intro" id="subtitle"></p>
+        <section class="card">
+          <div class="comparison">
+            <div><p class="day-label">Primer día</p><h2 id="from-title"></h2></div>
+            <div class="arrow" aria-hidden="true">→</div>
+            <div><p class="day-label">Para preparar</p><h2 id="to-title"></h2></div>
+          </div>
+          <div class="delta">
+            <section class="change added"><h3>Añade a tu mochila</h3><ul class="subject-list" id="added-list"></ul></section>
+            <section class="change removed"><h3>Puedes sacar</h3><ul class="subject-list" id="removed-list"></ul></section>
+          </div>
+          <p>Desarrollado por Xander de 3B, cualquier error o comentario haganmelo saber</p>
+          <details>
+            <summary>Comparar otros días</summary>
+            <div class="controls">
+              <label>Primer día <select id="from-select"></select></label>
+              <label>Segundo día <select id="to-select"></select></label>
+              <button id="compare-button" type="button">Comparar</button>
+            </div>
+          </details>
+        </section>
+      </section>
+    </main>
+    <script src="script.js"></script>
+  </body>
+</html>
