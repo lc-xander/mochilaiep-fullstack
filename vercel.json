@@ -1,0 +1,9 @@
+{
+  "framework": null,
+  "installCommand": "echo No dependencies required for static frontend",
+  "buildCommand": "node migrate/supabase/scripts/build-static-site.cjs",
+  "outputDirectory": "dist",
+  "rewrites": [
+    { "source": "/admin", "destination": "/admin.html" }
+  ]
+}

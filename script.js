@@ -1,5 +1,9 @@
 const days = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes'];
 const state = { schedule: null, roomName: '', user: null };
+const supabaseConfig = window.MOCHILA_SUPABASE_CONFIG;
+const supabase = supabaseConfig && window.supabase?.createClient
+  ? window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey)
+  : null;
 
 const loginView = document.getElementById('auth-view');
 const appView = document.getElementById('app-view');
@@ -89,36 +93,81 @@ function startApp(user, schedule) {
   compareDays(from, to);
 }
 
-async function requestJson(url, options = {}) {
-  const response = await fetch(url, {
-    credentials: 'same-origin',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(options.headers || {}),
-    },
-    ...options,
-  });
+function requireSupabase() {
+  if (!supabase) throw new Error('No se pudo cargar la configuración de Supabase.');
+  return supabase;
+}
 
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    throw new Error(payload.error || 'Request failed.');
+async function invokeEdgeFunction(name, body) {
+  const { data, error } = await requireSupabase().functions.invoke(name, { body });
+  if (error) {
+    let message = error.message;
+    try {
+      const response = error.context;
+      if (response instanceof Response) {
+        const payload = await response.clone().json();
+        message = payload.error || message;
+      }
+    } catch {
+      // Keep the SDK message when the function response is not JSON.
+    }
+    throw new Error(message);
   }
+  return data;
+}
 
-  return payload;
+async function loadProfile(userId) {
+  const { data, error } = await requireSupabase()
+    .from('profiles')
+    .select('id, username, role, group_id, active')
+    .eq('id', userId)
+    .single();
+  if (error) throw new Error(error.message);
+  if (!data.active) throw new Error('La cuenta está desactivada.');
+  return data;
+}
+
+async function loadStudentSchedule(profile) {
+  if (!profile.group_id) throw new Error('La cuenta no tiene un salón asignado.');
+  const client = requireSupabase();
+  const [groupResult, scheduleResult, subjectsResult] = await Promise.all([
+    client.from('school_groups').select('id, group_name').eq('id', profile.group_id).single(),
+    client.from('schedule').select('day, subject_id').eq('group_id', profile.group_id),
+    client.from('subjects').select('id, name'),
+  ]);
+  if (groupResult.error) throw new Error(groupResult.error.message);
+  if (scheduleResult.error) throw new Error(scheduleResult.error.message);
+  if (subjectsResult.error) throw new Error(subjectsResult.error.message);
+
+  const subjectNames = new Map(subjectsResult.data.map((subject) => [subject.id, subject.name]));
+  const schedule = Object.fromEntries(days.map((day) => [day, []]));
+  scheduleResult.data.forEach((entry) => {
+    if (schedule[entry.day] && subjectNames.has(entry.subject_id)) {
+      schedule[entry.day].push(subjectNames.get(entry.subject_id));
+    }
+  });
+  return { group: { name: groupResult.data.group_name }, schedule };
+}
+
+async function openAuthenticatedView(userId) {
+  const profile = await loadProfile(userId);
+  if (profile.role === 'admin') {
+    window.location.replace('/admin');
+    return;
+  }
+  if (profile.role !== 'student') throw new Error('El tipo de cuenta no está permitido.');
+  startApp(profile, await loadStudentSchedule(profile));
 }
 
 async function fetchSessionUser() {
   try {
-    const data = await requestJson('/api/me');
-    if (data.user.role === 'admin') {
-      window.location.href = '/admin';
-      return;
-    }
-    const scheduleData = await requestJson('/api/schedule');
-    startApp(data.user, scheduleData);
+    const { data, error } = await requireSupabase().auth.getSession();
+    if (error) throw new Error(error.message);
+    if (data.session) await openAuthenticatedView(data.session.user.id);
   } catch (error) {
     setFormMode('activate');
-    console.warn('No active session:', error.message);
+    activateError.textContent = error.message;
+    console.warn('No active Supabase session:', error.message);
   }
 }
 
@@ -131,14 +180,14 @@ activateForm.addEventListener('submit', async (event) => {
   const password = document.getElementById('new-password').value;
 
   try {
-    const payload = await requestJson('/api/activate', {
-      method: 'POST',
-      body: JSON.stringify({ code, username, password }),
-    });
-
-    if (payload.user) {
-      const scheduleData = await requestJson('/api/schedule');
-      startApp(payload.user, scheduleData);
+    const payload = await invokeEdgeFunction('activate', { code, username, password });
+    if (payload.session) {
+      const { error } = await requireSupabase().auth.setSession(payload.session);
+      if (error) throw new Error(error.message);
+      await openAuthenticatedView(payload.user.id);
+    } else {
+      setFormMode('login');
+      loginError.textContent = payload.message || 'Cuenta activada. Inicia sesión para continuar.';
     }
   } catch (error) {
     activateError.textContent = error.message;
@@ -153,18 +202,10 @@ loginForm.addEventListener('submit', async (event) => {
   const password = document.getElementById('login-password').value;
 
   try {
-    const authPayload = await requestJson('/api/login', {
-      method: 'POST',
-      body: JSON.stringify({ username, password }),
-    });
-
-    if (authPayload.user.role === 'admin') {
-      window.location.href = '/admin';
-      return;
-    }
-
-    const scheduleData = await requestJson('/api/schedule');
-    startApp(authPayload.user, scheduleData);
+    const payload = await invokeEdgeFunction('login-username', { username, password });
+    const { data, error } = await requireSupabase().auth.setSession(payload.session);
+    if (error) throw new Error(error.message);
+    await openAuthenticatedView(data.session.user.id);
   } catch (error) {
     loginError.textContent = error.message;
   }
@@ -177,9 +218,10 @@ compareButton.addEventListener('click', () => {
 
 logoutButton.addEventListener('click', async () => {
   try {
-    await requestJson('/api/logout', { method: 'POST' });
+    const { error } = await requireSupabase().auth.signOut();
+    if (error) throw new Error(error.message);
   } catch (error) {
-    console.warn('Logout issue:', error.message);
+    console.warn('Supabase sign out issue:', error.message);
   } finally {
     state.schedule = null;
     state.user = null;

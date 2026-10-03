@@ -1,6 +1,6 @@
 # Supabase migration infrastructure
 
-This directory is an isolated migration workspace. It does not replace or modify the application at the repository root. It contains only Supabase schema, seed data, Edge Functions, tests, migration utilities, and design notes.
+This directory holds Supabase schema, seed data, Edge Functions, tests, migration utilities, the Vercel static-build helper, and migration notes. The existing vanilla HTML/CSS/JavaScript views remain the frontend source at the repository root; their forms and appearance are retained while browser data access migrates to Supabase. The Express/MySQL backend source remains in place and unchanged.
 
 ## Current legacy contracts
 
@@ -19,6 +19,15 @@ This directory is an isolated migration workspace. It does not replace or modify
 - `supabase/tests/`: pgTAP authorization and RPC tests, run against local Supabase/PostgreSQL.
 - `scripts/`: read-only migration/export utilities. Export output belongs outside Git and must be handled as sensitive.
 - `test/`: Node tests for migration assets that do not need a database.
+- `scripts/build-static-site.cjs`: Vercel build helper that copies only the existing browser assets into `dist/` and generates a public Supabase runtime config from build environment variables.
+
+## Vercel static frontend
+
+The root `vercel.json` skips dependency installation, runs the vanilla Node build helper, and publishes only `dist/`; it does not bundle or transpile the frontend. The helper reads `SUPABASE_URL` and `SUPABASE_ANON_KEY` (or `SUPABASE_PUBLISHABLE_KEY`) during the Vercel build and writes `dist/supabase-config.js`. That generated file contains only the project URL and public key, is ignored by Git with the rest of `dist/`, and is intentionally visible to browsers. The helper does not read or copy a service-role key, server code, migration SQL, or test pages.
+
+The HTML loads the Supabase browser SDK from jsDelivr, then the generated config, then the existing vanilla script. Vercel rewrites `/admin` to the static `admin.html`; the admin UI checks the authenticated profile, while database access remains enforced by RLS. The Vercel project must use the repository root as its Root Directory for this root `vercel.json` to apply.
+
+The browser uses the existing `SUPABASE_URL` and `SUPABASE_ANON_KEY` Vercel variables. No `process.env` is expected in browser JavaScript. The public key is not a secret; the service-role key must remain only in the Supabase Edge Function environment.
 
 ## Database model and access rules
 

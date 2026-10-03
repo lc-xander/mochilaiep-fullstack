@@ -1,5 +1,9 @@
 const days = ['lunes', 'martes', 'miércoles', 'jueves', 'viernes'];
 const state = { groups: [], subjects: [], schedule: [], selectedGroupId: null };
+const config = window.MOCHILA_SUPABASE_CONFIG;
+const supabase = config && window.supabase?.createClient
+  ? window.supabase.createClient(config.url, config.anonKey)
+  : null;
 const $ = (selector) => document.querySelector(selector);
 
 function showFeedback(message, error = false) {
@@ -8,11 +12,26 @@ function showFeedback(message, error = false) {
   feedback.classList.toggle('error', error);
 }
 
-async function api(url, options = {}) {
-  const response = await fetch(url, { credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, ...options });
-  const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error || 'No se pudo completar la operación.');
-  return payload;
+function requireSupabase() {
+  if (!supabase) throw new Error('No se pudo cargar la configuración de Supabase.');
+  return supabase;
+}
+
+async function invokeAdminCodeFunction(body) {
+  const { data, error } = await requireSupabase().functions.invoke('admin-access-codes', { body });
+  if (error) {
+    let message = error.message;
+    try {
+      if (error.context instanceof Response) {
+        const payload = await error.context.clone().json();
+        message = payload.error || message;
+      }
+    } catch {
+      // Preserve the SDK error when the response is not JSON.
+    }
+    throw new Error(message);
+  }
+  return data;
 }
 
 function option(value, text) {
@@ -24,13 +43,12 @@ function option(value, text) {
 
 function fillSelect(selector, items, label) {
   const select = $(selector);
-  select.innerHTML = '';
-  items.forEach((item) => select.appendChild(option(item.id, label(item))));
+  select.replaceChildren(...items.map((item) => option(item.id, label(item))));
 }
 
 function fillDays(selector, includeAll = false) {
   const select = $(selector);
-  select.innerHTML = '';
+  select.replaceChildren();
   if (includeAll) select.appendChild(option('', 'Todos los días'));
   days.forEach((day) => select.appendChild(option(day, day[0].toUpperCase() + day.slice(1))));
 }
@@ -39,118 +57,237 @@ function formatDate(value) {
   return value ? new Date(value).toLocaleDateString('es-CL') : '—';
 }
 
+function appendCell(row, value) {
+  const cell = document.createElement('td');
+  cell.textContent = value ?? '';
+  row.appendChild(cell);
+  return cell;
+}
+
+function makeButton(label, onClick) {
+  const button = document.createElement('button');
+  button.className = 'small-action';
+  button.type = 'button';
+  button.textContent = label;
+  button.addEventListener('click', onClick);
+  return button;
+}
+
+function showPill(cell, label, className) {
+  const pill = document.createElement('span');
+  pill.className = `pill ${className}`;
+  pill.textContent = label;
+  cell.appendChild(pill);
+}
+
 async function loadSummary() {
-  const data = await api('/api/admin/summary');
-  $('#stat-students').textContent = data.students;
-  $('#stat-groups').textContent = data.groups;
-  $('#stat-subjects').textContent = data.subjects;
-  $('#stat-codes').textContent = data.available_codes;
+  const client = requireSupabase();
+  const count = (table, configure = (query) => query) => configure(
+    client.from(table).select('id', { count: 'exact', head: true })
+  );
+  const [students, groups, subjects, codes] = await Promise.all([
+    count('profiles', (query) => query.eq('role', 'student')),
+    count('school_groups'),
+    count('subjects'),
+    count('activation_codes', (query) => query.eq('active', true).is('used_at', null).is('revoked_at', null)),
+  ]);
+  for (const result of [students, groups, subjects, codes]) {
+    if (result.error) throw new Error(result.error.message);
+  }
+  $('#stat-students').textContent = students.count ?? 0;
+  $('#stat-groups').textContent = groups.count ?? 0;
+  $('#stat-subjects').textContent = subjects.count ?? 0;
+  $('#stat-codes').textContent = codes.count ?? 0;
 }
 
 async function loadGroups() {
-  const data = await api('/api/admin/groups');
-  state.groups = data.groups;
-  fillSelect('#code-group', state.groups, (group) => group.name);
-  fillSelect('#schedule-group', state.groups, (group) => group.name);
+  const { data, error } = await requireSupabase()
+    .from('school_groups')
+    .select('id, grade, section, group_name')
+    .order('grade')
+    .order('section');
+  if (error) throw new Error(error.message);
+  state.groups = data;
+  fillSelect('#code-group', state.groups, (group) => group.group_name);
+  fillSelect('#schedule-group', state.groups, (group) => group.group_name);
   const table = $('#groups-table');
-  table.innerHTML = '';
+  table.replaceChildren();
   state.groups.forEach((group) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td>${group.name}</td><td><button class="small-action" data-group-id="${group.id}">Consultar</button></td>`;
-    row.querySelector('button').addEventListener('click', () => loadGroupSchedule(group.id));
+    appendCell(row, group.group_name);
+    const actionCell = document.createElement('td');
+    actionCell.appendChild(makeButton('Consultar', () => loadGroupSchedule(group.id)));
+    row.appendChild(actionCell);
     table.appendChild(row);
   });
 }
 
 async function loadCodes() {
-  const data = await api('/api/admin/access-codes');
+  const { data, error } = await requireSupabase()
+    .from('activation_codes')
+    .select('id, group_id, active, created_at, used_at, revoked_at')
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  const groupNames = new Map(state.groups.map((group) => [group.id, group.group_name]));
   const table = $('#codes-table');
-  table.innerHTML = '';
-  data.access_codes.forEach((code) => {
+  table.replaceChildren();
+  data.forEach((code) => {
+    const status = code.revoked_at || (!code.active && !code.used_at)
+      ? 'revoked'
+      : code.used_at ? 'used' : 'available';
     const row = document.createElement('tr');
-    const action = code.status === 'available' ? `<button class="small-action" data-code-id="${code.id}">Revocar</button>` : '';
-    row.innerHTML = `<td>${code.group_name}</td><td><span class="pill ${code.status}">${code.status}</span></td><td>${formatDate(code.created_at)}</td><td>${action}</td>`;
-    const button = row.querySelector('button');
-    if (button) button.addEventListener('click', () => revokeCode(code.id));
+    appendCell(row, groupNames.get(code.group_id) || 'Salón desconocido');
+    const statusCell = document.createElement('td');
+    showPill(statusCell, status, status);
+    row.appendChild(statusCell);
+    appendCell(row, formatDate(code.created_at));
+    const actionCell = document.createElement('td');
+    if (status === 'available') actionCell.appendChild(makeButton('Revocar', () => revokeCode(code.id)));
+    row.appendChild(actionCell);
     table.appendChild(row);
   });
 }
 
 async function revokeCode(id) {
-  try { await api(`/api/admin/access-codes/${id}/revoke`, { method: 'POST' }); showFeedback('Código revocado.'); await Promise.all([loadCodes(), loadSummary()]); }
-  catch (error) { showFeedback(error.message, true); }
+  try {
+    await invokeAdminCodeFunction({ action: 'revoke', access_code_id: id });
+    showFeedback('Código revocado.');
+    await Promise.all([loadCodes(), loadSummary()]);
+  } catch (error) { showFeedback(error.message, true); }
 }
 
 async function loadStudents() {
-  const data = await api('/api/admin/students');
+  const { data, error } = await requireSupabase()
+    .from('profiles')
+    .select('id, username, group_id, active, created_at')
+    .eq('role', 'student')
+    .order('created_at', { ascending: false });
+  if (error) throw new Error(error.message);
+  const groupNames = new Map(state.groups.map((group) => [group.id, group.group_name]));
   const table = $('#students-table');
-  table.innerHTML = '';
-  data.students.forEach((student) => {
-    const active = Boolean(student.active);
+  table.replaceChildren();
+  data.forEach((student) => {
+    const active = student.active === true;
     const row = document.createElement('tr');
-    row.innerHTML = `<td>${student.username}</td><td>${student.group_name || 'Sin salón'}</td><td><span class="pill ${active ? 'active' : 'inactive'}">${active ? 'activo' : 'inactivo'}</span></td><td>${formatDate(student.created_at)}</td><td><button class="small-action">${active ? 'Desactivar' : 'Activar'}</button></td>`;
-    row.querySelector('button').addEventListener('click', () => updateStudent(student.id, !active));
+    appendCell(row, student.username);
+    appendCell(row, groupNames.get(student.group_id) || 'Sin salón');
+    const statusCell = document.createElement('td');
+    showPill(statusCell, active ? 'activo' : 'inactivo', active ? 'active' : 'inactive');
+    row.appendChild(statusCell);
+    appendCell(row, formatDate(student.created_at));
+    const actionCell = document.createElement('td');
+    actionCell.appendChild(makeButton(active ? 'Desactivar' : 'Activar', () => updateStudent(student.id, !active)));
+    row.appendChild(actionCell);
     table.appendChild(row);
   });
 }
 
 async function updateStudent(id, active) {
-  try { await api(`/api/admin/students/${id}/status`, { method: 'PATCH', body: JSON.stringify({ active }) }); showFeedback('Estado del alumno actualizado.'); await Promise.all([loadStudents(), loadSummary()]); }
-  catch (error) { showFeedback(error.message, true); }
+  try {
+    const { data, error } = await requireSupabase()
+      .from('profiles')
+      .update({ active })
+      .eq('id', id)
+      .eq('role', 'student')
+      .select('id')
+      .single();
+    if (error) throw new Error(error.message);
+    if (!data) throw new Error('No se encontró el alumno.');
+    showFeedback('Estado del alumno actualizado.');
+    await Promise.all([loadStudents(), loadSummary()]);
+  } catch (error) { showFeedback(error.message, true); }
 }
 
 async function loadSubjects() {
-  const data = await api('/api/admin/subjects');
-  state.subjects = data.subjects;
+  const { data, error } = await requireSupabase().from('subjects').select('id, name, created_at').order('name');
+  if (error) throw new Error(error.message);
+  state.subjects = data;
   fillSelect('#schedule-subject', state.subjects, (subject) => subject.name);
   const table = $('#subjects-table');
-  table.innerHTML = '';
+  table.replaceChildren();
   state.subjects.forEach((subject) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td><input class="edit-subject" value="${subject.name.replaceAll('"', '&quot;')}" /></td><td>${formatDate(subject.created_at)}</td><td><button class="small-action">Guardar</button></td>`;
-    row.querySelector('button').addEventListener('click', () => updateSubject(subject.id, row.querySelector('input').value));
+    const nameCell = document.createElement('td');
+    const input = document.createElement('input');
+    input.className = 'edit-subject';
+    input.value = subject.name;
+    nameCell.appendChild(input);
+    row.appendChild(nameCell);
+    appendCell(row, formatDate(subject.created_at));
+    const actionCell = document.createElement('td');
+    actionCell.appendChild(makeButton('Guardar', () => updateSubject(subject.id, input.value)));
+    row.appendChild(actionCell);
     table.appendChild(row);
   });
 }
 
 async function updateSubject(id, name) {
-  try { await api(`/api/admin/subjects/${id}`, { method: 'PATCH', body: JSON.stringify({ name }) }); showFeedback('Materia actualizada.'); await Promise.all([loadSubjects(), loadSummary()]); }
-  catch (error) { showFeedback(error.message, true); }
+  try {
+    const { error } = await requireSupabase().from('subjects').update({ name: name.trim() }).eq('id', id);
+    if (error) throw new Error(error.message);
+    showFeedback('Materia actualizada.');
+    await Promise.all([loadSubjects(), loadSummary()]);
+  } catch (error) { showFeedback(error.message, true); }
+}
+
+async function loadScheduleRows(groupId, day = '') {
+  const client = requireSupabase();
+  let query = client.from('schedule').select('id, group_id, day, subject_id').eq('group_id', groupId);
+  if (day) query = query.eq('day', day);
+  const { data, error } = await query.order('day').order('id');
+  if (error) throw new Error(error.message);
+  const subjectNames = new Map(state.subjects.map((subject) => [subject.id, subject.name]));
+  return data.map((entry) => ({ ...entry, subject_name: subjectNames.get(entry.subject_id) || 'Materia desconocida' }));
 }
 
 async function loadGroupSchedule(groupId) {
   state.selectedGroupId = groupId;
   const day = $('#group-schedule-day').value;
-  const query = new URLSearchParams({ group_id: groupId });
-  if (day) query.set('day', day);
   try {
-    const data = await api(`/api/admin/schedule?${query}`);
+    const group = state.groups.find((item) => item.id === groupId);
+    const schedule = await loadScheduleRows(groupId, day);
     $('#group-schedule-panel').hidden = false;
-    $('#group-schedule-title').textContent = `Horario ${data.group.name}`;
+    $('#group-schedule-title').textContent = `Horario ${group?.group_name || ''}`;
     const list = $('#group-schedule-list');
-    list.innerHTML = '';
-    data.schedule.forEach((entry) => { const item = document.createElement('li'); item.textContent = `${entry.day}: ${entry.subject_name}`; list.appendChild(item); });
-    if (!data.schedule.length) list.innerHTML = '<li>No hay materias para este filtro.</li>';
+    list.replaceChildren();
+    schedule.forEach((entry) => {
+      const item = document.createElement('li');
+      item.textContent = `${entry.day}: ${entry.subject_name}`;
+      list.appendChild(item);
+    });
+    if (!schedule.length) {
+      const item = document.createElement('li');
+      item.textContent = 'No hay materias para este filtro.';
+      list.appendChild(item);
+    }
   } catch (error) { showFeedback(error.message, true); }
 }
 
 async function loadAdminSchedule() {
-  const query = new URLSearchParams({ group_id: $('#schedule-group').value, day: $('#schedule-day').value });
-  const data = await api(`/api/admin/schedule?${query}`);
-  state.schedule = data.schedule;
+  const groupId = Number($('#schedule-group').value);
+  if (!groupId) return;
+  const schedule = await loadScheduleRows(groupId, $('#schedule-day').value);
+  state.schedule = schedule;
   const table = $('#schedule-table');
-  table.innerHTML = '';
-  data.schedule.forEach((entry) => {
+  table.replaceChildren();
+  schedule.forEach((entry) => {
     const row = document.createElement('tr');
-    row.innerHTML = `<td>${entry.subject_name}</td><td>${entry.day}</td><td><button class="small-action">Eliminar</button></td>`;
-    row.querySelector('button').addEventListener('click', () => deleteSchedule(entry.id));
+    appendCell(row, entry.subject_name);
+    appendCell(row, entry.day);
+    const actionCell = document.createElement('td');
+    actionCell.appendChild(makeButton('Eliminar', () => deleteSchedule(entry.id)));
+    row.appendChild(actionCell);
     table.appendChild(row);
   });
 }
 
 async function deleteSchedule(id) {
-  try { await api(`/api/admin/schedule/${id}`, { method: 'DELETE' }); showFeedback('Materia eliminada del horario.'); await loadAdminSchedule(); }
-  catch (error) { showFeedback(error.message, true); }
+  try {
+    const { error } = await requireSupabase().from('schedule').delete().eq('id', id);
+    if (error) throw new Error(error.message);
+    showFeedback('Materia eliminada del horario.');
+    await loadAdminSchedule();
+  } catch (error) { showFeedback(error.message, true); }
 }
 
 $('#admin-nav').addEventListener('click', async (event) => {
@@ -160,16 +297,18 @@ $('#admin-nav').addEventListener('click', async (event) => {
   document.querySelectorAll('.view').forEach((view) => view.classList.toggle('active', view.dataset.view === button.dataset.section));
   $('#page-title').textContent = button.textContent;
   showFeedback('');
-  if (button.dataset.section === 'codes') await loadCodes();
-  if (button.dataset.section === 'students') await loadStudents();
-  if (button.dataset.section === 'subjects') await loadSubjects();
-  if (button.dataset.section === 'groups') await loadGroups();
-  if (button.dataset.section === 'schedule') await loadAdminSchedule();
+  try {
+    if (button.dataset.section === 'codes') await loadCodes();
+    if (button.dataset.section === 'students') await loadStudents();
+    if (button.dataset.section === 'subjects') await loadSubjects();
+    if (button.dataset.section === 'groups') await loadGroups();
+    if (button.dataset.section === 'schedule') await loadAdminSchedule();
+  } catch (error) { showFeedback(error.message, true); }
 });
 
 $('#generate-code').addEventListener('click', async () => {
   try {
-    const data = await api('/api/admin/access-codes/generate', { method: 'POST', body: JSON.stringify({ group_id: Number($('#code-group').value) }) });
+    const data = await invokeAdminCodeFunction({ action: 'generate', group_id: Number($('#code-group').value) });
     $('#generated-code').textContent = data.code;
     showFeedback('Código generado. Esta es la única vez que se muestra.');
     await Promise.all([loadCodes(), loadSummary()]);
@@ -178,25 +317,55 @@ $('#generate-code').addEventListener('click', async () => {
 
 $('#subject-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try { await api('/api/admin/subjects', { method: 'POST', body: JSON.stringify({ name: $('#new-subject').value }) }); event.target.reset(); showFeedback('Materia agregada.'); await Promise.all([loadSubjects(), loadSummary()]); }
-  catch (error) { showFeedback(error.message, true); }
+  try {
+    const { error } = await requireSupabase().from('subjects').insert({ name: $('#new-subject').value.trim() });
+    if (error) throw new Error(error.message);
+    event.target.reset();
+    showFeedback('Materia agregada.');
+    await Promise.all([loadSubjects(), loadSummary()]);
+  } catch (error) { showFeedback(error.message, true); }
 });
 
 $('#add-schedule').addEventListener('click', async () => {
-  try { await api('/api/admin/schedule', { method: 'POST', body: JSON.stringify({ group_id: Number($('#schedule-group').value), day: $('#schedule-day').value, subject_id: Number($('#schedule-subject').value) }) }); showFeedback('Materia agregada al horario.'); await loadAdminSchedule(); }
-  catch (error) { showFeedback(error.message, true); }
+  try {
+    const { error } = await requireSupabase().from('schedule').insert({
+      group_id: Number($('#schedule-group').value),
+      day: $('#schedule-day').value,
+      subject_id: Number($('#schedule-subject').value),
+    });
+    if (error) throw new Error(error.message);
+    showFeedback('Materia agregada al horario.');
+    await loadAdminSchedule();
+  } catch (error) { showFeedback(error.message, true); }
 });
 
-$('#schedule-group').addEventListener('change', loadAdminSchedule);
-$('#schedule-day').addEventListener('change', loadAdminSchedule);
-$('#group-schedule-day').addEventListener('change', () => { if (state.selectedGroupId) loadGroupSchedule(state.selectedGroupId); });
-$('#logout-button').addEventListener('click', async () => { await api('/api/logout', { method: 'POST' }).catch(() => {}); window.location.href = '/'; });
+$('#schedule-group').addEventListener('change', () => loadAdminSchedule().catch((error) => showFeedback(error.message, true)));
+$('#schedule-day').addEventListener('change', () => loadAdminSchedule().catch((error) => showFeedback(error.message, true)));
+$('#group-schedule-day').addEventListener('change', () => {
+  if (state.selectedGroupId) loadGroupSchedule(state.selectedGroupId);
+});
+$('#logout-button').addEventListener('click', async () => {
+  await requireSupabase().auth.signOut();
+  window.location.replace('/');
+});
 
 (async function init() {
   try {
-    const session = await api('/api/me');
-    if (session.user.role !== 'admin') throw new Error('Administrator privileges required.');
-    $('#session-user').textContent = session.user.username;
+    const client = requireSupabase();
+    const { data: authData, error: authError } = await client.auth.getUser();
+    if (authError || !authData.user) throw new Error('Inicia sesión como administrador para continuar.');
+    const { data: profile, error: profileError } = await client
+      .from('profiles')
+      .select('username, role, active')
+      .eq('id', authData.user.id)
+      .single();
+    if (profileError) throw new Error(profileError.message);
+    if (!profile.active) throw new Error('La cuenta está desactivada.');
+    if (profile.role !== 'admin') {
+      window.location.replace('/');
+      return;
+    }
+    $('#session-user').textContent = profile.username;
   } catch (error) {
     showFeedback(error.message, true);
     window.setTimeout(() => { window.location.replace('/'); }, 900);
